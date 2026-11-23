@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>线路控制台</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#overview" aria-label="线路控制台首页"><span class="brand-mark" aria-hidden="true">↗</span><span>线路控制台<small>NETWORK CONTROL</small></span></a>
+      <div class="workspace-label">本机工作区</div>
+      <nav aria-label="主导航">
+        <a class="nav-link active" href="#overview"><span aria-hidden="true">◉</span>连接总览</a>
+        <a class="nav-link" href="#nodes"><span aria-hidden="true">⇄</span>线路与测速</a>
+        <button class="nav-link" id="open-settings"><span aria-hidden="true">⚙</span>连接设置</button>
+      </nav>
+      <div class="sidebar-note"><span class="small-dot"></span><span>在本机运行<small>代理核心可在后台保持连接</small></span></div>
+      <div class="sidebar-note"><span class="small-dot"></span><span id="direct-routing-status">正在核对国内直连保护</span></div>
+      <div class="sidebar-version" id="version"></div>
+    </aside>
+
+    <main>
+      <header class="page-header" id="overview">
+        <div><h1>线路总览</h1><p class="page-subtitle" id="region-status">正在检查香港线路限制</p></div>
+        <div class="header-actions"><span class="status-pill" id="controller-pill"><span class="status-dot"></span><span id="controller-label">正在连接</span></span><button class="button secondary icon-button" id="refresh" aria-label="刷新连接状态"><span id="refresh-icon" aria-hidden="true">↻</span>刷新</button></div>
+      </header>
+
+      <section class="offline-banner hidden" id="offline-banner" aria-live="polite">
+        <span class="banner-symbol" aria-hidden="true">!</span><div><strong id="offline-title">尚未连接到代理核心</strong><p id="offline-message">启动已安装的代理后台，或在连接设置中填写本机控制端口。</p></div><div class="banner-actions"><button class="button primary" id="engine-start">启动后台</button><button class="button secondary" id="offline-settings">连接设置</button></div>
+      </section>
+
+      <section class="overview-grid" aria-label="线路概况">
+        <article class="panel route-panel">
+          <div class="panel-heading"><h2>ChatGPT 新连接</h2><span class="tag blue" id="fixed-tag">正在读取</span></div>
+          <div class="route-name" id="openai-node">正在读取…</div>
+          <div class="route-meta" id="openai-detail">正在核对实际线路</div>
+          <div class="route-bottom"><span class="ordinary-line">普通代理 <strong id="general-node">—</strong></span><a class="text-link" id="choose-gpt" href="#nodes">更换线路 <span aria-hidden="true">↗</span></a></div>
+        </article>
+        <article class="panel live-panel">
+          <div class="panel-heading"><h2>ChatGPT 已有连接</h2><span class="tag neutral" id="live-total">—</span></div>
+          <div id="live-nodes" class="live-nodes"><div class="empty-inline">正在读取连接状态…</div></div>
+          <p class="inline-note" id="live-note">已有会话可能保留旧线路，重新连接后使用新线路。</p>
+        </article>
+      </section>
+
+      <section class="panel nodes-panel" id="nodes">
+        <div class="nodes-heading"><div><h2>选择线路 <span id="node-count" class="heading-count">—</span></h2><p id="scope-help">先选用途，再从列表选线路。测速结果可用于比较延迟。</p></div><button class="button secondary" id="test-all" disabled><span id="test-all-label">测速全部</span></button></div>
+        <div class="scope-bar">
+          <div class="scope-switch" role="group" aria-label="线路用途"><button type="button" id="scope-gpt" aria-pressed="true">ChatGPT</button><button type="button" id="scope-general" aria-pressed="false">普通代理</button></div>
+          <button class="button secondary small hidden" id="gpt-follow" type="button">跟随普通代理</button>
+          <label class="general-picker hidden" id="group-picker"><span>自动与故障转移</span><select id="general-select" aria-label="自动与故障转移"><option value="">选择线路组</option></select></label>
+        </div>
+        <div class="node-toolbar"><label class="search-field"><span aria-hidden="true">⌕</span><input id="node-search" type="search" placeholder="搜索地区或线路名称" aria-label="搜索线路"></label><label class="sort-field"><span>排序</span><select id="node-sort" aria-label="线路排序"><option value="default">当前优先</option><option value="delay">延迟从低到高</option><option value="name">线路名称</option></select></label></div>
+        <div class="table-wrap"><table class="node-table"><thead><tr><th scope="col">线路</th><th scope="col">延迟</th><th scope="col" class="actions-heading">操作</th></tr></thead><tbody id="node-rows"></tbody></table><div class="table-empty hidden" id="node-empty">暂无线路。连接代理核心后，线路会自动出现在这里。</div></div>
+        <div class="panel-footer"><span><span class="small-dot"></span>每 5 秒刷新状态</span><span id="last-update">等待更新</span></div>
+      </section>
+      <details class="panel activity-details">
+        <summary>本机代理与实时流量</summary>
+        <section class="activity-panel" aria-label="实时流量与连接控制">
+          <div class="traffic-block"><div class="section-label">代理下载</div><div class="traffic-value" id="download-value">—<small>MB/s</small></div><svg class="sparkline" viewBox="0 0 180 36" preserveAspectRatio="none" aria-hidden="true"><path id="download-area" class="spark-area" d=""/><path id="download-line" class="spark-line" d=""/></svg></div>
+          <div class="traffic-block upload"><div class="section-label">代理上传</div><div class="traffic-value" id="upload-value">—<small>MB/s</small></div><svg class="sparkline" viewBox="0 0 180 36" preserveAspectRatio="none" aria-hidden="true"><path id="upload-area" class="spark-area" d=""/><path id="upload-line" class="spark-line" d=""/></svg></div>
+          <div class="connection-block"><div class="section-label">系统代理</div><div class="connection-state"><span class="status-dot" id="proxy-dot"></span><strong id="proxy-state">正在读取</strong></div><div class="connection-buttons"><button class="button primary small" id="proxy-toggle" disabled>连接代理</button><button class="button secondary small hidden" id="route-resume">恢复专用通道</button><button class="button subtle small hidden" id="route-pause">暂停专用通道</button></div><div class="connection-caption" id="route-caption">—</div></div>
+        </section>
+      </details>
+      <footer class="page-footer"><span>所有控制在这台电脑上完成</span><button class="text-link" id="footer-settings">设置连接端口</button></footer>
+    </main>
+  </div>
+
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <form id="settings-form">
+      <div class="dialog-heading"><div><div class="eyebrow">本机代理核心</div><h2 id="settings-title">连接设置</h2></div><button class="close-button" type="button" id="close-settings" aria-label="关闭设置">×</button></div>
+      <p class="dialog-intro">自动寻找已安装的代理核心，也可手动填写本机控制地址。</p>
+      <label class="form-label" for="controller-url">控制地址</label><input class="form-input" id="controller-url" type="url" placeholder="http://127.0.0.1:1978" autocomplete="off" required><p class="field-note">仅支持这台电脑的本地地址。不同电脑的端口可能不同。</p>
+      <label class="form-label" for="controller-token">控制密码 <span>可选</span></label><input class="form-input" id="controller-token" type="password" placeholder="未设置时留空" autocomplete="new-password"><p class="field-note" id="token-note">留空会保留已保存的控制密码。</p>
+      <label class="checkbox-row"><input id="clear-token" type="checkbox">清除已保存的控制密码</label>
+      <div class="settings-status" id="settings-status" aria-live="polite"></div>
+      <div class="dialog-footer"><button class="button secondary" type="button" id="discover">自动寻找</button><div><button class="button subtle" type="button" id="cancel-settings">取消</button><button class="button primary" type="submit" id="save-settings">保存并连接</button></div></div>
+    </form>
+  </dialog>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+</body>
+</html>
