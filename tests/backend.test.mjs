@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { localUrl } from '../lib/controller.mjs';
+import { GPT_DOMAINS } from '../lib/regions.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const group = '通用选择 🚀';
@@ -21,6 +22,7 @@ const hidden = ['fixture-node-password', 'fixture-private-server.example',
 let temp, mock, child, base, controllerUrl, csrf, selected = nodeA;
 let refuseSwitch = false;
 let switchGate = null;
+let reconnectFixture = null;
 const calls = [];
 
 function json(res, code, value) {
@@ -36,6 +38,7 @@ function proxies() {
     [nodeB]: { type: 'Trojan', password: hidden[0], history: [{ delay: 2021 }] },
     [outsider]: { type: 'Trojan', password: hidden[0], history: [] },
     DIRECT: { type: 'Direct' },
+    ...(reconnectFixture ? { ChatGPT: { type: 'Selector', now: nodeB, all: [nodeA, nodeB] } } : {})
   };
 }
 async function reservePort() {
@@ -71,12 +74,26 @@ before(async () => {
     if (req.method === 'GET' && pathname === '/version') return json(res, 200, { version: 'fixture-legacy-1.0', meta: false });
     if (req.method === 'GET' && pathname === '/configs') return json(res, 200, { port: 1975, mode: 'rule', secret: fixtureToken });
     if (req.method === 'GET' && pathname === '/proxies') return json(res, 200, { proxies: proxies(), private: hidden[4] });
-    if (req.method === 'GET' && pathname === '/rules') return json(res, 200, { rules: [{ type: 'DomainSuffix', payload: 'chatgpt.com', proxy: nodeA }] });
+    if (req.method === 'GET' && pathname === '/rules') return json(res, 200, {
+      rules: reconnectFixture ? GPT_DOMAINS.map(payload => ({ type: 'DomainSuffix', payload, proxy: 'ChatGPT' })) :
+        [{ type: 'DomainSuffix', payload: 'chatgpt.com', proxy: nodeA }]
+    });
     if (req.method === 'GET' && pathname === '/connections') return json(res, 200, {
       uploadTotal: 10000, downloadTotal: 20000,
-      connections: [{ metadata: { host: 'chatgpt.com', processPath: hidden[3], password: hidden[0] },
+      connections: reconnectFixture ? [...reconnectFixture.values()] : [{ metadata: { host: 'chatgpt.com', processPath: hidden[3], password: hidden[0] },
         id: 'fixture-private-connection-id', chains: [nodeA, group], rulePayload: 'chatgpt.com' }],
     });
+    if (reconnectFixture && pathname.startsWith('/connections/') && req.method === 'DELETE') {
+      const id = pathname.slice('/connections/'.length);
+      const connection = reconnectFixture.get(id);
+      if (!connection || id === 'already-ended') {
+        reconnectFixture.delete(id);
+        return json(res, 404, { error: 'ended before deletion' });
+      }
+      reconnectFixture.delete(id);
+      reconnectFixture.set(id + '-new', { ...connection, id: id + '-new', chains: [nodeB, 'ChatGPT'] });
+      res.writeHead(204); return res.end();
+    }
     if (pathname === '/proxies/' + group && req.method === 'PUT') {
       const input = JSON.parse(body);
       if (switchGate) await switchGate;
@@ -267,4 +284,46 @@ test('empty token leaves the configured token intact and exposes only tokenConfi
   assert.equal(stored.encryptedToken, hidden[5]);
   assert(!JSON.stringify(stored).includes(fixtureToken));
   for (const value of hidden) assert(!JSON.stringify(r.body).includes(value));
+});
+
+test('immediate switch closes only eligible old ChatGPT connections and tolerates natural expiry', async () => {
+  const old = (id, host, extra = {}) => [id, { id, metadata: { host, ...extra }, chains: [nodeA, 'ChatGPT'] }];
+  reconnectFixture = new Map([
+    old('chat-old', 'WS.CHATGPT.COM.'),
+    old('gpt-asset-old', 'cdn.oaistatic.com'),
+    old('already-ended', 'chatgpt.com'),
+    old('onedrive', 'tenant-my.sharepoint.com', { process: 'OneDrive.exe' }),
+    old('outlook', 'outlook.office.com', { process: 'OUTLOOK.EXE' }),
+    old('office-with-gpt-host', 'chatgpt.com', { processPath: 'C:\\Apps\\olk.exe' }),
+    old('suffix-lookalike', 'chatgpt.com.example.test'),
+    old('unsafe-id/..', 'chatgpt.com'),
+    ['connected-to-new', { id: 'connected-to-new', metadata: { host: 'chatgpt.com' }, chains: [nodeB, 'ChatGPT'] }],
+    ['missing-route', { id: 'missing-route', metadata: { host: 'chatgpt.com' } }],
+  ]);
+  try {
+    const before = await panel('/api/status');
+    assert.equal(before.body.openai.oldConnectionCount, 3);
+    assert.equal(before.body.openai.reconnectAvailable, true);
+    const call = (expectedNode, headers = mutationHeaders()) =>
+      panel('/api/reconnect-chatgpt', { method: 'POST', data: { expectedNode }, headers });
+    const mark = writeCalls().length;
+    assert.equal((await call(nodeA)).code, 409);
+    assert.equal((await call(nodeB, {})).code, 403);
+    assert.equal(writeCalls().length, mark);
+    const result = await call(nodeB);
+    assert.equal(result.code, 200);
+    assert.deepEqual(result.body, { ok: true, requested: 3, accepted: 2, unconfirmed: 1 });
+    const writes = writeCalls().slice(mark);
+    assert(writes.every(entry => entry.method === 'DELETE'));
+    assert.deepEqual(writes.map(entry => entry.pathname).sort(),
+      ['/connections/already-ended', '/connections/chat-old', '/connections/gpt-asset-old']);
+    assert(reconnectFixture.has('onedrive') && reconnectFixture.has('outlook') && reconnectFixture.has('connected-to-new'));
+    const after = await panel('/api/status');
+    assert.equal(after.body.openai.oldConnectionCount, 0);
+    assert(after.body.openai.live.some(entry => entry.node === nodeB && entry.count === 3));
+    assert.deepEqual((await call(nodeB)).body, { ok: true, requested: 0, accepted: 0, unconfirmed: 0 });
+    assert.equal(writeCalls().length, mark + 3);
+  } finally {
+    reconnectFixture = null;
+  }
 });

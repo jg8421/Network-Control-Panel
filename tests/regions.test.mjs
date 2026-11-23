@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parse } from 'yaml';
 import { renderRules } from '../lib/direct-guard.mjs';
-import { GPT_DOMAINS, containsHongKong, isHongKong } from '../lib/regions.mjs';
+import { GPT_DOMAINS, PROBE_GROUP, SPEED_HOST, containsHongKong, isHongKong } from '../lib/regions.mjs';
+import { candidateIsBetter, createRouteHealth } from '../lib/auto-route.mjs';
 import { prepareSaturnProfile } from '../lib/saturn-profile.mjs';
 import { summarize } from '../lib/controller.mjs';
 
@@ -33,10 +34,35 @@ test('removes Hong Kong from the whole profile, preserves direct rules and stays
   assert.deepEqual(groups.自动选择.proxies, ['🇯🇵日本', '台北']);
   assert.deepEqual(groups.故障转移.proxies, ['REJECT']);
   assert.deepEqual(groups.ChatGPT.proxies, ['SELECT', '🇯🇵日本', '台北']);
+  assert.deepEqual(groups[PROBE_GROUP].proxies, groups.ChatGPT.proxies);
+  assert(!groups.SELECT.proxies.includes(PROBE_GROUP));
+  assert(profile.rules.includes(`DOMAIN,${SPEED_HOST},${PROBE_GROUP}`));
   assert.deepEqual(profile.rules.slice(0, 3), policy.directDomains.map(domain => `DOMAIN-SUFFIX,${domain},DIRECT`));
   assert.deepEqual(profile.rules.slice(3, 3 + GPT_DOMAINS.length), GPT_DOMAINS.map(domain => `DOMAIN-SUFFIX,${domain},ChatGPT`));
   assert(profile.rules.includes('DOMAIN-SUFFIX,example.invalid,SELECT'));
   assert.equal(profile.rules.at(-1), 'MATCH,DIRECT');
+});
+
+test('automatic switch requires repeated slow samples and a meaningfully better candidate', () => {
+  const health = createRouteHealth();
+  health.track('Japan');
+  const now = 1000000;
+  const observe = (delay, downloadMbps, measuredDownload, offset = 0) =>
+    health.observe({ delay, downloadMbps, measuredDownload, now: now + offset });
+  assert.equal(observe(1200, 3, true), null);
+  assert.equal(observe(220, null, false, 60000), null, 'a transient spike is insufficient');
+  assert.equal(observe(null, null, false, 120000), null);
+  assert.equal(observe(null, null, false, 180000), '线路连续超时');
+  assert(candidateIsBetter(health.stats, { delay: 300, downloadMbps: 2 }, '线路连续超时'));
+  health.track('Taiwan');
+  assert.equal(observe(250, 0.7, true), null);
+  assert.equal(health.needsDownload(now + 60000), true);
+  assert.equal(observe(260, 0.6, true, 60000), '下载速度持续偏低');
+  assert(!candidateIsBetter(health.stats, { delay: 160, downloadMbps: null }, '下载速度持续偏低'));
+  assert(!candidateIsBetter(health.stats, { delay: 160, downloadMbps: 0.8 }, '下载速度持续偏低'));
+  assert(candidateIsBetter(health.stats, { delay: 350, downloadMbps: 2 }, '下载速度持续偏低'));
+  health.track('US');
+  assert.equal(observe(250, null, true, 180000), null, 'bandwidth-service failure is not a slow line');
 });
 
 test('blocks nested automatic groups even when their selected exit is allowed', () => {

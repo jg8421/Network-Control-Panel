@@ -38,10 +38,20 @@
           <div class="panel-heading"><h2>ChatGPT 新连接</h2><span class="tag blue" id="fixed-tag">正在读取</span></div>
           <div class="route-name" id="openai-node">正在读取…</div>
           <div class="route-meta" id="openai-detail">正在核对实际线路</div>
+          <div class="auto-line" id="auto-line" hidden>
+            <label class="auto-toggle"><input type="checkbox" id="auto-chatgpt">自动换线</label>
+            <span id="auto-status"></span>
+          </div>
           <div class="route-bottom"><span class="ordinary-line">普通代理 <strong id="general-node">—</strong></span><a class="text-link" id="choose-gpt" href="#nodes">更换线路 <span aria-hidden="true">↗</span></a></div>
         </article>
         <article class="panel live-panel">
-          <div class="panel-heading"><h2>ChatGPT 已有连接</h2><span class="tag neutral" id="live-total">—</span></div>
+          <div class="panel-heading">
+            <h2>ChatGPT 已有连接</h2>
+            <div class="live-actions">
+              <span class="tag neutral" id="live-total">—</span>
+              <button class="button primary small" id="reconnect-chatgpt" type="button" aria-describedby="live-note" disabled>立即换线</button>
+            </div>
+          </div>
           <div id="live-nodes" class="live-nodes"><div class="empty-inline">正在读取连接状态…</div></div>
           <p class="inline-note" id="live-note">已有会话可能保留旧线路，重新连接后使用新线路。</p>
         </article>

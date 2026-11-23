@@ -1,7 +1,7 @@
 'use strict';
 
 const $ = (id) => document.getElementById(id);
-const app = { status: null, scope: 'openai', loading: false, csrf: '', testResults: new Map(), testing: new Set(), testingAll: false, action: false, traffic: { up: [], down: [] }, toastTimer: null };
+const app = { status: null, scope: 'openai', loading: false, csrf: '', testResults: new Map(), testing: new Set(), testingAll: false, action: false, reconnecting: false, traffic: { up: [], down: [] }, toastTimer: null };
 const setText = (id, value) => { $(id).textContent = value == null ? '—' : String(value); };
 const show = (id, visible) => $(id).classList.toggle('hidden', !visible);
 function element(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text != null) el.textContent = String(text); return el; }
@@ -44,8 +44,12 @@ function renderLive(status) {
     container.append(row);
   }
   setText('live-total', total ? `${total} 条连接` : '暂无连接');
-  const old = live.some((n) => (n.node || n.name) !== status.openai?.configured);
-  setText('live-note', old ? '切换线路后，已有连接会沿用原线路，直到重新建立。' : '这里按实际出口汇总 ChatGPT 和 OpenAI 的活动连接。');
+  const old = status.openai?.oldConnectionCount || 0;
+  const button = $('reconnect-chatgpt');
+  button.disabled = !connected(status) || !status.openai?.reconnectAvailable || !old || app.action || app.testingAll;
+  setText('reconnect-chatgpt', app.reconnecting ? '正在换线…' : '立即换线');
+  setText('live-note', old ? `有 ${old} 条连接仍走旧线路。立即换线会断开这些连接，ChatGPT 会在重连时使用新线路。` :
+    '这里按实际出口汇总 ChatGPT 和 OpenAI 的活动连接。');
 }
 function renderStatus(status) {
   setText('direct-routing-status', status.directRouting?.ok ? '国内直连保护已开启' : status.directRouting?.enabled ? '正在核对国内直连保护' : '按代理核心规则分流');
@@ -59,6 +63,15 @@ function renderStatus(status) {
   const follows = status.openai?.followsGeneral;
   setText('openai-detail', online ? (follows ? '普通代理换线时，ChatGPT 的新连接也会换线。' : '新打开的 ChatGPT 连接按当前规则选线。') : '连接代理核心后显示');
   setText('fixed-tag', follows ? '跟随普通代理' : status.openai?.source || '正在读取');
+  const automatic = status.automatic;
+  $('auto-line').hidden = !automatic?.available && !automatic?.enabled;
+  $('auto-chatgpt').checked = !!automatic?.enabled;
+  $('auto-chatgpt').disabled = !online || app.action || (!automatic?.available && !automatic?.enabled);
+  const measurements = [automatic?.delay ? `${automatic.delay} ms` : null,
+    automatic?.downloadMbps !== null && automatic?.downloadMbps !== undefined ? `${automatic.downloadMbps} Mbps` : null].filter(Boolean);
+  setText('auto-status', automatic?.enabled
+    ? automatic.message || (measurements.length ? measurements.join(' · ') : '等待测速')
+    : '持续高延迟或低速时换线');
   setText('version', status.version ? `版本 ${status.version}` : '');
   setText('region-status', !online ? '等待代理核心' : status.region?.liveHongKong ? `仍有 ${status.region.liveHongKong} 条香港连接，等待处理` :
     status.region?.coreExcluded ? '香港线路已从代理核心中排除' : '面板已禁选香港，正在核对代理核心');
@@ -155,10 +168,30 @@ async function testNodes(names) {
 }
 async function selectNode(scope, node) {
   if (app.action || app.testingAll) return; app.action = true; renderNodes();
-  if (app.status) renderGeneralPicker(app.status);
+  if (app.status) { renderGeneralPicker(app.status); renderLive(app.status); }
   try { const result = await api('/api/select', { scope, node }); toast(result.message || (scope === 'openai' ? 'ChatGPT 新连接已切换，已有会话可重新连接以使用新线路。' : '普通流量线路已切换')); await refresh(); }
   catch (error) { toast(error.message, true); }
   finally { app.action = false; if (app.status) renderStatus(app.status); }
+}
+async function reconnectChatGpt() {
+  const { openai } = app.status || {};
+  if (app.action || app.testingAll || !openai?.reconnectAvailable || !openai.oldConnectionCount) return;
+  app.action = true;
+  app.reconnecting = true;
+  renderStatus(app.status);
+  try {
+    const result = await api('/api/reconnect-chatgpt', { expectedNode: openai.configured });
+    if (result.unconfirmed) toast(`已断开 ${result.accepted} 条旧连接，另有 ${result.unconfirmed} 条关闭未确认。请查看已有连接。`, true);
+    else toast(result.accepted ? `已断开 ${result.accepted} 条 ChatGPT 旧连接，重连后走新线路。` : '当前没有需要切换的 ChatGPT 连接。');
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    app.action = false;
+    app.reconnecting = false;
+    if (app.status) renderStatus(app.status);
+    await refresh();
+    setTimeout(() => refresh(), 1300);
+  }
 }
 async function action(path, body, message) {
   if (app.action) return; app.action = true; if (app.status) renderStatus(app.status);
@@ -170,6 +203,8 @@ function openSettings() { const settings = app.status?.settings || {}; $('contro
 function closeSettings() { $('settings-dialog').close(); $('controller-token').value = ''; }
 $('refresh').addEventListener('click', () => refresh(true));
 $('test-all').addEventListener('click', () => testNodes());
+$('reconnect-chatgpt').addEventListener('click', reconnectChatGpt);
+$('auto-chatgpt').addEventListener('change', event => action('/api/automatic-chatgpt', { enabled: event.target.checked }));
 $('gpt-follow').addEventListener('click', () => selectNode('openai', app.status?.general?.group));
 function setScope(scope) {
   app.scope = scope;

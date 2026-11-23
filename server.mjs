@@ -4,8 +4,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { api, discover, localUrl, summarize, testNodes } from './lib/controller.mjs';
-import { GPT_GROUP, containsHongKong } from './lib/regions.mjs';
+import { api, discover, localUrl, oldChatGptConnections, summarize, testNodes } from './lib/controller.mjs';
+import { GPT_GROUP, PROBE_GROUP, SPEED_HOST, containsHongKong } from './lib/regions.mjs';
+import { startAutoRoute } from './lib/auto-route.mjs';
 import { exists, jsonFile, atomicWrite, systemProxy, saturnPaths, setSystemProxy, startEngine, bridgePaths, routeStatus, controlRoute, setFixedRoute, protectToken, unprotectToken } from './lib/windows.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -21,8 +22,8 @@ let settings = await jsonFile(settingsPath) || {};
 let token = process.env.PANEL_CONTROLLER_TOKEN || '';
 if (!token && settings.encryptedToken) { try { token = await unprotectToken(settings.encryptedToken); } catch { token = ''; } }
 if (settings.controllerUrl) { try { settings.controllerUrl = localUrl(settings.controllerUrl); } catch { delete settings.controllerUrl; } }
-let found = null, statusPromise = null, lastDiscovery = 0, mutation = false, trafficSample = null;
-const directGuard = startDirectGuard(STATE, { canRun: () => !mutation, preferredGpt: () => settings.gptSelection });
+let found = null, statusPromise = null, lastDiscovery = 0, mutation = false, autoBusy = false, trafficSample = null;
+const directGuard = startDirectGuard(STATE, { canRun: () => !mutation && !autoBusy, preferredGpt: () => settings.gptSelection });
 const delays = new Map();
 
 function publicSettings() { return { controllerUrl: settings.controllerUrl || found?.url || '', tokenConfigured: !!token }; }
@@ -35,6 +36,59 @@ async function refresh(discoverMore = false) {
   }
   return found;
 }
+async function readRouting(f) {
+  const [config, proxyData, rules] = await Promise.all([
+    api(f.url, token, '/configs'), api(f.url, token, '/proxies'), api(f.url, token, '/rules')
+  ]);
+  const live = { ...f, config, proxies: proxyData.proxies };
+  return { live, rules, clean: summarize(live, rules, {}, null) };
+}
+function supportsAutomatic(f, rules, clean) {
+  return f.url === directGuard.health.controllerUrl && clean.openai.reconnectAvailable
+    && f.proxies[PROBE_GROUP]?.type === 'Selector'
+    && rules.rules?.find(rule => rule.payload === SPEED_HOST && /domain/i.test(rule.type))?.proxy === PROBE_GROUP;
+}
+async function setSelector(f, group, name) {
+  const key = '/proxies/' + encodeURIComponent(group);
+  await api(f.url, token, key, 'PUT', { name });
+  if ((await api(f.url, token, key)).now !== name) throw new Error('后台没有确认线路切换');
+}
+async function closeOldChatGpt(f, connections, target) {
+  const ids = [...new Set(oldChatGptConnections(connections, target).map(connection => connection.id))];
+  let accepted = 0;
+  for (let i = 0; i < ids.length; i += 8) {
+    const batch = await Promise.allSettled(ids.slice(i, i + 8).map(id =>
+      api(f.url, token, '/connections/' + encodeURIComponent(id), 'DELETE', undefined, 2500)));
+    accepted += batch.filter(result => result.status === 'fulfilled').length;
+  }
+  return { requested: ids.length, accepted, unconfirmed: ids.length - accepted };
+}
+const autoRoute = startAutoRoute({
+  setBusy: value => { autoBusy = value; },
+  read: async () => {
+    if (mutation || !settings.autoChatGpt) return null;
+    await directGuard.wait();
+    if (mutation || !settings.autoChatGpt) return null;
+    const { live, rules, clean } = await readRouting(await refresh());
+    if (!supportsAutomatic(live, rules, clean)) return null;
+    const options = new Set(clean.openai.options.filter(name => live.proxies[PROBE_GROUP].all.includes(name)));
+    return { found: live, token, node: clean.openai.configured, candidates: clean.nodes.filter(node => options.has(node.name)) };
+  },
+  promote: async (context, node) => {
+    if (mutation || !settings.autoChatGpt || found?.url !== context.found.url) return false;
+    mutation = true;
+    try {
+      const { live, rules, clean } = await readRouting(context.found);
+      if (!supportsAutomatic(live, rules, clean) || clean.openai.configured !== context.node
+        || !clean.openai.options.includes(node) || !clean.nodes.some(candidate => candidate.name === node)) return false;
+      await setSelector(live, GPT_GROUP, node);
+      await saveSettings({ ...settings, gptSelection: node });
+      const connections = await api(live.url, token, '/connections');
+      await closeOldChatGpt(live, connections, node);
+      return true;
+    } finally { mutation = false; }
+  }
+});
 async function status(force = false) {
   if (statusPromise) return statusPromise;
   statusPromise = (async () => {
@@ -50,7 +104,9 @@ async function status(force = false) {
       trafficSample = { ...clean.totals, at: now, url: f.url };
       delete clean.totals;
       clean.nodes = clean.nodes.map(n => ({ ...n, delay: delays.has(n.name) ? delays.get(n.name) : n.delay }));
-      return { ...base, ...clean, openai: { ...clean.openai, fixedSupported: clean.openai.managed || base.capabilities.fixedRoute }, controller: { connected: true, url: f.url, version: f.version }, settings: publicSettings(), updatedAt: new Date().toISOString() };
+      return { ...base, ...clean, openai: { ...clean.openai, fixedSupported: clean.openai.managed || base.capabilities.fixedRoute },
+        automatic: { ...autoRoute.state, available: supportsAutomatic(found, rules, clean), enabled: settings.autoChatGpt === true },
+        controller: { connected: true, url: f.url, version: f.version }, settings: publicSettings(), updatedAt: new Date().toISOString() };
     } catch (e) {
       found = null;
       return { ...base, controller: { connected: false, url: settings.controllerUrl || '', error: e.message || '后台不可用' }, updatedAt: new Date().toISOString() };
@@ -100,6 +156,31 @@ const server = http.createServer(async (req, res) => {
         if (url.pathname === '/api/system-proxy') { if (typeof input.enabled !== 'boolean') throw new Error('连接选项无效'); const f = input.enabled ? await refresh() : null; await setSystemProxy(input.enabled, f?.config.port || f?.config['mixed-port'] || 0); return send(res, 200, { ok: true, message: input.enabled ? '系统代理已连接' : '系统代理已断开；专用远程通道单独控制' }); }
         if (url.pathname === '/api/shutdown') { send(res, 200, { ok: true }); setTimeout(() => { server.close(); setTimeout(() => process.exit(0), 300).unref(); }, 150); return; }
         const f = await refresh();
+        if (url.pathname === '/api/automatic-chatgpt') {
+          if (typeof input?.enabled !== 'boolean') throw new Error('自动换线选项无效');
+          await directGuard.wait();
+          const { live, rules, clean } = await readRouting(f);
+          if (input.enabled && !supportsAutomatic(live, rules, clean)) throw new Error('当前代理核心尚未准备好自动换线');
+          const next = { ...settings, autoChatGpt: input.enabled };
+          if (input.enabled) {
+            await setSelector(live, GPT_GROUP, clean.openai.configured);
+            next.gptSelection = clean.openai.configured;
+          }
+          await saveSettings(next);
+          if (input.enabled) setTimeout(() => autoRoute.run(), 100).unref();
+          return send(res, 200, { ok: true, message: input.enabled ? 'ChatGPT 自动换线已开启' : 'ChatGPT 自动换线已关闭' });
+        }
+        if (url.pathname === '/api/reconnect-chatgpt') {
+          await directGuard.wait();
+          const [config, proxyData, rules, connections] = await Promise.all([
+            api(f.url, token, '/configs'), api(f.url, token, '/proxies'),
+            api(f.url, token, '/rules'), api(f.url, token, '/connections')
+          ]);
+          const { openai } = summarize({ ...f, config, proxies: proxyData.proxies }, rules, connections, null);
+          if (!openai.reconnectAvailable) throw new Error('当前规则无法确认 ChatGPT 的新线路');
+          if (input?.expectedNode !== openai.configured) return send(res, 409, { error: 'ChatGPT 新线路已变化，确认新线路后再试' });
+          return send(res, 200, { ok: true, ...await closeOldChatGpt(f, connections, openai.configured) });
+        }
         if (url.pathname === '/api/test') {
           const valid = summarize(f, {}, {}, null).nodes.map(n => n.name);
           const names = input.nodes === undefined ? valid : input.nodes;
@@ -119,11 +200,8 @@ const server = http.createServer(async (req, res) => {
           const group = scope === 'general' ? selected.general.group : selected.openai.managed ? GPT_GROUP : null;
           if (group) {
             if (!f.proxies[group]?.all?.includes(node)) throw new Error('这条线路不属于当前选择组');
-            const key = '/proxies/' + encodeURIComponent(group);
-            await api(f.url, token, key, 'PUT', { name: node });
-            const confirmed = await api(f.url, token, key);
-            if (confirmed.now !== node) throw new Error('后台没有确认线路切换');
-            if (group === GPT_GROUP && f.url === directGuard.health.controllerUrl) await saveSettings({ ...settings, gptSelection: node });
+            await setSelector(f, group, node);
+            if (group === GPT_GROUP && f.url === directGuard.health.controllerUrl) await saveSettings({ ...settings, gptSelection: node, autoChatGpt: false });
           } else if (scope === 'openai') {
             if (f.proxies[node].all || ['DIRECT','REJECT','COMPATIBLE','PASS'].includes(node)) throw new Error('ChatGPT 专用线路需要具体节点');
             await setFixedRoute(node, async () => {
