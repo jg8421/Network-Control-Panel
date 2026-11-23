@@ -33,39 +33,50 @@
         <span class="banner-symbol" aria-hidden="true">!</span><div><strong id="offline-title">尚未连接到代理核心</strong><p id="offline-message">启动已安装的代理后台，或在连接设置中填写本机控制端口。</p></div><div class="banner-actions"><button class="button primary" id="engine-start">启动后台</button><button class="button secondary" id="offline-settings">连接设置</button></div>
       </section>
 
-      <section class="overview-grid" aria-label="线路概况">
-        <article class="panel route-panel">
-          <div class="panel-heading"><h2>ChatGPT 新连接</h2><span class="tag blue" id="fixed-tag">正在读取</span></div>
-          <div class="route-name" id="openai-node">正在读取…</div>
-          <div class="route-meta" id="openai-detail">正在核对实际线路</div>
+      <section class="panel unified-overview" aria-label="当前线路">
+        <div class="route-summary">
+          <div>
+            <h2>ChatGPT / Claude</h2>
+            <div class="route-name" id="openai-node">正在读取…</div>
+          </div>
+          <div>
+            <h2>普通网页</h2>
+            <div class="route-name" id="general-node">—</div>
+          </div>
+        </div>
+        <div class="route-controls">
           <div class="auto-line" id="auto-line" hidden>
             <label class="auto-toggle"><input type="checkbox" id="auto-chatgpt">自动换线</label>
             <span id="auto-status"></span>
           </div>
-          <div class="route-bottom"><span class="ordinary-line">普通代理 <strong id="general-node">—</strong></span><a class="text-link" id="choose-gpt" href="#nodes">更换线路 <span aria-hidden="true">↗</span></a></div>
-        </article>
-        <article class="panel live-panel">
-          <div class="panel-heading">
-            <h2>ChatGPT 已有连接</h2>
-            <div class="live-actions">
-              <span class="tag neutral" id="live-total">—</span>
-              <button class="button primary small" id="reconnect-chatgpt" type="button" aria-describedby="live-note" disabled>立即换线</button>
-            </div>
+          <div class="live-actions">
+            <span id="live-note">正在读取 ChatGPT 连接</span>
+            <button class="button secondary small" id="reconnect-chatgpt" type="button" aria-describedby="live-note" disabled>立即换线</button>
           </div>
-          <div id="live-nodes" class="live-nodes"><div class="empty-inline">正在读取连接状态…</div></div>
-          <p class="inline-note" id="live-note">已有会话可能保留旧线路，重新连接后使用新线路。</p>
-        </article>
+        </div>
       </section>
 
       <section class="panel nodes-panel" id="nodes">
-        <div class="nodes-heading"><div><h2>选择线路 <span id="node-count" class="heading-count">—</span></h2><p id="scope-help">先选用途，再从列表选线路。测速结果可用于比较延迟。</p></div><button class="button secondary" id="test-all" disabled><span id="test-all-label">测速全部</span></button></div>
-        <div class="scope-bar">
-          <div class="scope-switch" role="group" aria-label="线路用途"><button type="button" id="scope-gpt" aria-pressed="true">ChatGPT</button><button type="button" id="scope-general" aria-pressed="false">普通代理</button></div>
-          <button class="button secondary small hidden" id="gpt-follow" type="button">跟随普通代理</button>
-          <label class="general-picker hidden" id="group-picker"><span>自动与故障转移</span><select id="general-select" aria-label="自动与故障转移"><option value="">选择线路组</option></select></label>
+        <div class="nodes-heading choice-header">
+          <h2>手动选线</h2>
+          <label class="search-field"><span aria-hidden="true">⌕</span><input id="node-search" type="search" placeholder="搜索两列线路" aria-label="搜索两列线路"></label>
+          <button class="button secondary" id="test-all" disabled><span id="test-all-label">测速全部</span></button>
         </div>
-        <div class="node-toolbar"><label class="search-field"><span aria-hidden="true">⌕</span><input id="node-search" type="search" placeholder="搜索地区或线路名称" aria-label="搜索线路"></label><label class="sort-field"><span>排序</span><select id="node-sort" aria-label="线路排序"><option value="default">当前优先</option><option value="delay">延迟从低到高</option><option value="name">线路名称</option></select></label></div>
-        <div class="table-wrap"><table class="node-table"><thead><tr><th scope="col">线路</th><th scope="col">延迟</th><th scope="col" class="actions-heading">操作</th></tr></thead><tbody id="node-rows"></tbody></table><div class="table-empty hidden" id="node-empty">暂无线路。连接代理核心后，线路会自动出现在这里。</div></div>
+        <div class="choice-columns">
+          <section class="choice-column" aria-labelledby="ai-choice-title">
+            <div class="choice-title"><h3 id="ai-choice-title">ChatGPT / Claude</h3><span id="ai-node-count" class="heading-count"></span></div>
+            <div class="choice-note" id="ai-note">选择一条专用线路</div>
+            <ul class="choice-list" id="ai-node-list"></ul>
+          </section>
+          <section class="choice-column" aria-labelledby="ordinary-choice-title">
+            <div class="choice-title"><h3 id="ordinary-choice-title">普通代理</h3><span id="ordinary-node-count" class="heading-count"></span></div>
+            <div class="ordinary-controls">
+              <button class="button secondary small hidden" id="auto-ordinary" type="button">按网络自动</button>
+              <label class="general-picker hidden" id="group-picker"><span class="sr-only">选择普通线路组</span><select id="general-select" aria-label="选择普通线路组"><option value="">选择线路组</option></select></label>
+            </div>
+            <ul class="choice-list" id="ordinary-node-list"></ul>
+          </section>
+        </div>
         <div class="panel-footer"><span><span class="small-dot"></span>每 5 秒刷新状态</span><span id="last-update">等待更新</span></div>
       </section>
       <details class="panel activity-details">

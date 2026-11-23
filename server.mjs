@@ -5,8 +5,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { api, discover, localUrl, oldChatGptConnections, summarize, testNodes } from './lib/controller.mjs';
-import { GPT_GROUP, PROBE_GROUP, SPEED_HOST, containsHongKong } from './lib/regions.mjs';
+import { GPT_GROUP, ORDINARY_GROUP, PROBE_GROUP, SPEED_HOST, containsHongKong } from './lib/regions.mjs';
 import { startAutoRoute } from './lib/auto-route.mjs';
+import { ordinaryTarget, startNetworkRoute } from './lib/network-route.mjs';
 import { exists, jsonFile, atomicWrite, systemProxy, saturnPaths, setSystemProxy, startEngine, bridgePaths, routeStatus, controlRoute, setFixedRoute, protectToken, unprotectToken } from './lib/windows.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -53,6 +54,24 @@ async function setSelector(f, group, name) {
   await api(f.url, token, key, 'PUT', { name });
   if ((await api(f.url, token, key)).now !== name) throw new Error('后台没有确认线路切换');
 }
+async function applyOrdinary(f, target) {
+  const current = await api(f.url, token, '/proxies/' + encodeURIComponent(ORDINARY_GROUP));
+  if (!current.all?.includes(target)) throw new Error('普通网页出口没有对应选项');
+  if (current.now !== target) await setSelector(f, ORDINARY_GROUP, target);
+}
+const networkRoute = startNetworkRoute({
+  supported: () => !!directGuard.health.controllerUrl,
+  apply: async region => {
+    if (mutation || autoBusy) return;
+    mutation = true;
+    try {
+      await directGuard.wait();
+      const f = await refresh();
+      if (f.url === directGuard.health.controllerUrl)
+        await applyOrdinary(f, ordinaryTarget(region, settings.ordinaryMode === 'manual'));
+    } finally { mutation = false; }
+  }
+});
 async function closeOldChatGpt(f, connections, target) {
   const ids = [...new Set(oldChatGptConnections(connections, target).map(connection => connection.id))];
   let accepted = 0;
@@ -106,6 +125,8 @@ async function status(force = false) {
       clean.nodes = clean.nodes.map(n => ({ ...n, delay: delays.has(n.name) ? delays.get(n.name) : n.delay }));
       return { ...base, ...clean, openai: { ...clean.openai, fixedSupported: clean.openai.managed || base.capabilities.fixedRoute },
         automatic: { ...autoRoute.state, available: supportsAutomatic(found, rules, clean), enabled: settings.autoChatGpt === true },
+        network: { ...networkRoute.state, available: clean.general.networkManaged && f.url === directGuard.health.controllerUrl,
+          auto: settings.ordinaryMode !== 'manual' },
         controller: { connected: true, url: f.url, version: f.version }, settings: publicSettings(), updatedAt: new Date().toISOString() };
     } catch (e) {
       found = null;
@@ -156,6 +177,14 @@ const server = http.createServer(async (req, res) => {
         if (url.pathname === '/api/system-proxy') { if (typeof input.enabled !== 'boolean') throw new Error('连接选项无效'); const f = input.enabled ? await refresh() : null; await setSystemProxy(input.enabled, f?.config.port || f?.config['mixed-port'] || 0); return send(res, 200, { ok: true, message: input.enabled ? '系统代理已连接' : '系统代理已断开；专用远程通道单独控制' }); }
         if (url.pathname === '/api/shutdown') { send(res, 200, { ok: true }); setTimeout(() => { server.close(); setTimeout(() => process.exit(0), 300).unref(); }, 150); return; }
         const f = await refresh();
+        if (url.pathname === '/api/auto-ordinary') {
+          await directGuard.wait();
+          const { live, clean } = await readRouting(f);
+          if (f.url !== directGuard.health.controllerUrl || !clean.general.networkManaged) throw new Error('当前核心尚未准备好网络分流');
+          await applyOrdinary(live, ordinaryTarget(networkRoute.state.region, false));
+          await saveSettings({ ...settings, ordinaryMode: 'auto' });
+          return send(res, 200, { ok: true, message: '普通网页已恢复按网络选线' });
+        }
         if (url.pathname === '/api/automatic-chatgpt') {
           if (typeof input?.enabled !== 'boolean') throw new Error('自动换线选项无效');
           await directGuard.wait();
@@ -202,6 +231,10 @@ const server = http.createServer(async (req, res) => {
             if (!f.proxies[group]?.all?.includes(node)) throw new Error('这条线路不属于当前选择组');
             await setSelector(f, group, node);
             if (group === GPT_GROUP && f.url === directGuard.health.controllerUrl) await saveSettings({ ...settings, gptSelection: node, autoChatGpt: false });
+            if (scope === 'general' && selected.general.networkManaged && f.url === directGuard.health.controllerUrl) {
+              await applyOrdinary(f, group);
+              await saveSettings({ ...settings, ordinaryMode: 'manual' });
+            }
           } else if (scope === 'openai') {
             if (f.proxies[node].all || ['DIRECT','REJECT','COMPATIBLE','PASS'].includes(node)) throw new Error('ChatGPT 专用线路需要具体节点');
             await setFixedRoute(node, async () => {

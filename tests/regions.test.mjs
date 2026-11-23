@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parse } from 'yaml';
 import { renderRules } from '../lib/direct-guard.mjs';
-import { GPT_DOMAINS, PROBE_GROUP, SPEED_HOST, containsHongKong, isHongKong } from '../lib/regions.mjs';
+import { AI_DOMAINS, GPT_DOMAINS, ORDINARY_GROUP, PROBE_GROUP, SPEED_HOST, containsHongKong, isHongKong } from '../lib/regions.mjs';
 import { candidateIsBetter, createRouteHealth } from '../lib/auto-route.mjs';
+import { ordinaryTarget, traceRegion } from '../lib/network-route.mjs';
 import { prepareSaturnProfile } from '../lib/saturn-profile.mjs';
 import { summarize } from '../lib/controller.mjs';
 
@@ -33,14 +34,38 @@ test('removes Hong Kong from the whole profile, preserves direct rules and stays
   assert.deepEqual(groups.SELECT.proxies, ['自动选择', '🇯🇵日本', '台北']);
   assert.deepEqual(groups.自动选择.proxies, ['🇯🇵日本', '台北']);
   assert.deepEqual(groups.故障转移.proxies, ['REJECT']);
-  assert.deepEqual(groups.ChatGPT.proxies, ['SELECT', '🇯🇵日本', '台北']);
-  assert.deepEqual(groups[PROBE_GROUP].proxies, groups.ChatGPT.proxies);
+  assert.deepEqual(groups.ChatGPT.proxies, ['🇯🇵日本', '台北']);
+  assert.deepEqual(groups[PROBE_GROUP].proxies, ['SELECT', ...groups.ChatGPT.proxies]);
+  assert.deepEqual(groups[ORDINARY_GROUP].proxies, ['SELECT', 'DIRECT']);
   assert(!groups.SELECT.proxies.includes(PROBE_GROUP));
   assert(profile.rules.includes(`DOMAIN,${SPEED_HOST},${PROBE_GROUP}`));
   assert.deepEqual(profile.rules.slice(0, 3), policy.directDomains.map(domain => `DOMAIN-SUFFIX,${domain},DIRECT`));
-  assert.deepEqual(profile.rules.slice(3, 3 + GPT_DOMAINS.length), GPT_DOMAINS.map(domain => `DOMAIN-SUFFIX,${domain},ChatGPT`));
-  assert(profile.rules.includes('DOMAIN-SUFFIX,example.invalid,SELECT'));
+  assert.deepEqual(profile.rules.slice(3, 3 + AI_DOMAINS.length), AI_DOMAINS.map(domain => `DOMAIN-SUFFIX,${domain},ChatGPT`));
+  assert(profile.rules.includes(`DOMAIN-SUFFIX,example.invalid,${ORDINARY_GROUP}`));
+  assert(profile.rules.includes(`DOMAIN-SUFFIX,github.com,${ORDINARY_GROUP}`));
   assert.equal(profile.rules.at(-1), 'MATCH,DIRECT');
+});
+
+test('Hong Kong direct detection preserves the saved ordinary node and the independent AI route', () => {
+  assert.equal(traceRegion('loc=HK\r\ncolo=NRT\r\nstatus=200\r\n'), 'HK', 'geo is based on client IP, not Cloudflare datacenter');
+  for (const text of ['loc=HK\nstatus=302', 'colo=HKG\nstatus=200', 'loc=HK\nloc=JP\nstatus=200']) assert.equal(traceRegion(text), null);
+  assert.equal(ordinaryTarget('HK', false), 'DIRECT');
+  assert.equal(ordinaryTarget('HK', true), 'SELECT');
+  assert.equal(ordinaryTarget('CN', false), 'SELECT');
+  assert.equal(ordinaryTarget(null, false), 'SELECT');
+  const proxies = { SELECT: { type: 'Selector', all: ['Japan'], now: 'Japan' },
+    ChatGPT: { type: 'Selector', all: ['US'], now: 'US' }, Japan: {}, US: {},
+    [ORDINARY_GROUP]: { type: 'Selector', all: ['SELECT','DIRECT'], now: 'DIRECT' } };
+  const rules = { rules: [...AI_DOMAINS.map(payload => ({ type: 'DomainSuffix', payload, proxy: 'ChatGPT' })),
+    { type: 'DomainSuffix', payload: 'github.com', proxy: ORDINARY_GROUP },
+    { type: 'DomainSuffix', payload: 'sharepoint.com', proxy: 'DIRECT' }] };
+  const summary = () => summarize({ proxies, config: { mode: 'rule' } }, rules, {}, null);
+  assert.equal(summary().general.direct, true);
+  assert.equal(summary().general.selection, 'Japan');
+  assert.equal(summary().openai.configured, 'US');
+  proxies[ORDINARY_GROUP].now = 'SELECT';
+  assert.equal(summary().general.direct, false);
+  assert.equal(summary().openai.configured, 'US');
 });
 
 test('automatic switch requires repeated slow samples and a meaningfully better candidate', () => {

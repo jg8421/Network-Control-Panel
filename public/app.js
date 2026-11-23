@@ -1,7 +1,7 @@
 'use strict';
 
 const $ = (id) => document.getElementById(id);
-const app = { status: null, scope: 'openai', loading: false, csrf: '', testResults: new Map(), testing: new Set(), testingAll: false, action: false, reconnecting: false, traffic: { up: [], down: [] }, toastTimer: null };
+const app = { status: null, loading: false, csrf: '', testResults: new Map(), testing: new Set(), testingAll: false, action: false, reconnecting: false, traffic: { up: [], down: [] }, toastTimer: null };
 const setText = (id, value) => { $(id).textContent = value == null ? '—' : String(value); };
 const show = (id, visible) => $(id).classList.toggle('hidden', !visible);
 function element(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text != null) el.textContent = String(text); return el; }
@@ -29,27 +29,12 @@ function drawSparkline(type, value) {
 }
 function nodeDelay(node) { const saved = app.testResults.get(node.name); return saved ? saved.delay : node.delay ?? node.delayMs ?? null; }
 function renderLive(status) {
-  const live = Array.isArray(status.openai?.live) ? status.openai.live : [];
-  const container = $('live-nodes'); container.replaceChildren(); let total = 0;
-  if (!live.length) container.append(element('div', 'empty-inline', connected(status) ? '暂无 ChatGPT 活动连接' : '连接代理核心后显示实际线路'));
-  for (const item of live) {
-    const name = item.node || '未识别线路';
-    const count = Number(item.count) || 0;
-    const matches = name === status.openai?.configured;
-    total += count;
-    const row = element('div', 'live-node' + (matches ? ' current' : ''));
-    row.append(element('span', 'node-indicator'), element('span', 'live-name', name));
-    if (!matches && status.openai?.configured) row.append(element('span', 'tag neutral', '与新连接不同'));
-    row.append(element('span', 'live-count', `${count} 条`));
-    container.append(row);
-  }
-  setText('live-total', total ? `${total} 条连接` : '暂无连接');
+  const total = (status.openai?.live || []).reduce((sum, item) => sum + (Number(item.count) || 0), 0);
   const old = status.openai?.oldConnectionCount || 0;
   const button = $('reconnect-chatgpt');
   button.disabled = !connected(status) || !status.openai?.reconnectAvailable || !old || app.action || app.testingAll;
   setText('reconnect-chatgpt', app.reconnecting ? '正在换线…' : '立即换线');
-  setText('live-note', old ? `有 ${old} 条连接仍走旧线路。立即换线会断开这些连接，ChatGPT 会在重连时使用新线路。` :
-    '这里按实际出口汇总 ChatGPT 和 OpenAI 的活动连接。');
+  setText('live-note', old ? `${old} 条 ChatGPT 连接仍走旧线` : total ? `${total} 条 ChatGPT 活动连接` : '暂无 ChatGPT 活动连接');
 }
 function renderStatus(status) {
   setText('direct-routing-status', status.directRouting?.ok ? '国内直连保护已开启' : status.directRouting?.enabled ? '正在核对国内直连保护' : '按代理核心规则分流');
@@ -60,9 +45,6 @@ function renderStatus(status) {
   show('engine-start', Boolean(capabilities.engineStart)); $('engine-start').disabled = app.action;
   const configured = status.openai?.configured;
   setText('openai-node', online ? configured || '由规则决定' : '尚未连接');
-  const follows = status.openai?.followsGeneral;
-  setText('openai-detail', online ? (follows ? '普通代理换线时，ChatGPT 的新连接也会换线。' : '新打开的 ChatGPT 连接按当前规则选线。') : '连接代理核心后显示');
-  setText('fixed-tag', follows ? '跟随普通代理' : status.openai?.source || '正在读取');
   const automatic = status.automatic;
   $('auto-line').hidden = !automatic?.available && !automatic?.enabled;
   $('auto-chatgpt').checked = !!automatic?.enabled;
@@ -73,8 +55,10 @@ function renderStatus(status) {
     ? automatic.message || (measurements.length ? measurements.join(' · ') : '等待测速')
     : '持续高延迟或低速时换线');
   setText('version', status.version ? `版本 ${status.version}` : '');
-  setText('region-status', !online ? '等待代理核心' : status.region?.liveHongKong ? `仍有 ${status.region.liveHongKong} 条香港连接，等待处理` :
-    status.region?.coreExcluded ? '香港线路已从代理核心中排除' : '面板已禁选香港，正在核对代理核心');
+  const network = status.network;
+  const region = network?.region === 'HK' ? '直连出口：香港' : network?.region ? `直连出口：${network.region}` : '直连地区待确认';
+  setText('region-status', !online ? '等待代理核心' : network?.available ? region :
+    status.region?.coreExcluded ? '代理候选已排除香港' : '正在核对代理核心');
   renderLive(status);
   const traffic = status.traffic || {}; const up = traffic.upBps ?? traffic.up ?? 0; const down = traffic.downBps ?? traffic.down ?? 0;
   setTraffic('download-value', online ? down : null); setTraffic('upload-value', online ? up : null); if (online) { drawSparkline('up', up); drawSparkline('down', down); }
@@ -86,7 +70,7 @@ function renderStatus(status) {
   setText('route-caption', capabilities.routeControl ? (routeText[routeStatus] || '可在此恢复专用连接通道') : online ? '由本机代理核心提供网络连接' : '请先启动代理后台');
   const general = currentGeneral(status);
   const selection = status.general?.selection;
-  setText('general-node', selection && selection !== general ? `${selection} → ${general}` : general);
+  setText('general-node', !online ? '—' : status.general?.direct ? '直连' : selection && selection !== general ? `${selection} → ${general}` : general);
   renderGeneralPicker(status);
   $('test-all').disabled = !online || app.testingAll || app.action; setText('test-all-label', app.testingAll ? '测速中…' : '测速全部');
   setText('last-update', `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`);
@@ -107,56 +91,63 @@ function renderGeneralPicker(status) {
     }));
     select.dataset.options = JSON.stringify(names);
   }
-  select.value = names.includes(selection) ? selection : '';
+  select.value = !status.general?.direct && names.includes(selection) ? selection : '';
   select.disabled = !connected(status) || !names.length || app.action || app.testingAll;
-  const gpt = app.scope === 'openai';
-  show('group-picker', !gpt && names.length > 0);
-  const follow = $('gpt-follow');
-  const canFollow = status.openai?.managed && status.openai?.options?.includes(status.general?.group);
-  show('gpt-follow', gpt && canFollow);
-  follow.disabled = !connected(status) || app.action || app.testingAll || status.openai?.followsGeneral;
-  setText('gpt-follow', status.openai?.followsGeneral ? '已跟随普通代理' : '改为跟随普通代理');
-  setText('scope-help', gpt ? fixedSupported(status) ? '选中线路后，ChatGPT 的新连接使用它。' :
-    '可在「普通代理」中换线。当前由代理核心决定 ChatGPT 线路。' : '用于匹配代理规则的网站。ChatGPT 设为跟随时也会使用这条线路。');
+  show('group-picker', names.length > 0);
+  const network = status.network;
+  show('auto-ordinary', !!network?.available);
+  $('auto-ordinary').disabled = !connected(status) || network?.auto || app.action || app.testingAll;
+  setText('auto-ordinary', network?.auto ? '已按网络自动' : '恢复按网络自动');
+  setText('ai-note', status.automatic?.enabled ? '手动选线会关闭自动换线' : '手动选择一条专用线路');
 }
 function renderNodes() {
-  const status = app.status || {}; const query = $('node-search').value.trim().toLocaleLowerCase(); const sort = $('node-sort').value;
-  const nodes = (Array.isArray(status.nodes) ? status.nodes : []).filter((n) => n && typeof n.name === 'string');
-  const configured = status.openai?.configured; const general = currentGeneral(status);
-  const visible = nodes.filter((n) => n.name.toLocaleLowerCase().includes(query));
-  const rank = (n) => n.name === configured ? 0 : n.name === general ? 1 : 2;
-  visible.sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name, 'zh-CN') : sort === 'delay' ? (Number(nodeDelay(a)) > 0 ? Number(nodeDelay(a)) : Infinity) - (Number(nodeDelay(b)) > 0 ? Number(nodeDelay(b)) : Infinity) : rank(a) - rank(b));
-  setText('node-count', String(nodes.length)); const tbody = $('node-rows'); tbody.replaceChildren();
-  show('node-empty', !visible.length); setText('node-empty', query ? '没有找到匹配线路，换个关键词试试。' : '暂无线路。连接代理核心后，线路会自动出现在这里。');
-  for (const node of visible) {
-    const row = element('tr', node.name === configured ? 'selected-row' : '');
-    const nameCell = element('td'); const title = element('div', 'node-title'); title.append(element('span', 'name', node.name));
-    if (node.name === configured) title.append(element('span', 'tag blue', 'GPT'));
-    if (node.name === general) title.append(element('span', 'tag neutral', '普通'));
-    nameCell.append(title);
-    const delayCell = element('td'); const delay = Number(nodeDelay(node)); const result = app.testResults.get(node.name); const testing = app.testing.has(node.name);
-    const delayLabel = testing ? '测速中…' : result?.error ? '暂不可用' : delay > 0 ? `${Math.round(delay)} ms` : '未测速';
-    const delayClass = testing ? '' : result?.error ? 'failed' : delay > 0 ? delay < 600 ? 'fast' : delay < 1300 ? 'medium' : 'slow' : '';
-    const delayEl = element('span', `delay ${delayClass}`, delayLabel); if (result?.error) delayEl.title = result.error; delayCell.append(delayEl);
-    const actionsCell = element('td'); const actions = element('div', 'row-actions');
-    const test = element('button', 'table-button test', testing ? '测速中' : '测速'); test.type = 'button'; test.disabled = !connected(status) || testing || app.testingAll; test.setAttribute('aria-label', `测试 ${node.name}`); test.addEventListener('click', () => testNodes([node.name]));
-    const scope = app.scope;
-    const gpt = scope === 'openai';
-    const picked = gpt ? (status.openai?.managed ? status.openai.selection : configured) : status.general?.selection;
-    const mayPick = gpt ? (status.openai?.managed ? status.openai.options.includes(node.name) : fixedSupported(status)) :
-      status.general?.options?.includes(node.name);
-    const choice = element('button', 'table-button' + (node.name === picked ? ' active-choice' : ''), node.name === picked ? '已选' : '使用此线路');
-    choice.type = 'button';
-    choice.disabled = !connected(status) || !mayPick || app.action || app.testingAll || node.name === picked;
-    choice.setAttribute('aria-label', `${gpt ? 'ChatGPT' : '普通代理'}使用 ${node.name}`);
-    choice.addEventListener('click', () => selectNode(scope, node.name));
-    actions.append(test, choice); actionsCell.append(actions); row.append(nameCell, delayCell, actionsCell); tbody.append(row);
+  const status = app.status || {};
+  const query = $('node-search').value.trim().toLocaleLowerCase();
+  for (const [id, scope] of [['ai', 'openai'], ['ordinary', 'general']]) {
+    const ai = scope === 'openai';
+    const list = $(id + '-node-list');
+    const picked = ai ? status.openai?.configured : status.general?.direct ? null : status.general?.selection;
+    const pinned = ai ? !status.automatic?.enabled : !status.network?.available || !status.network.auto;
+    const eligible = (status.nodes || []).filter(node => ai ? (status.openai?.managed ? status.openai.options.includes(node.name) : fixedSupported(status)) :
+      status.general?.options?.includes(node.name));
+    const visible = eligible.filter(node => node.name.toLocaleLowerCase().includes(query));
+    const latency = node => Number(nodeDelay(node)) > 0 ? Number(nodeDelay(node)) : Infinity;
+    visible.sort((a, b) => Number(b.name === picked) - Number(a.name === picked) ||
+      (latency(a) === latency(b) ? 0 : latency(a) - latency(b)));
+    setText(id + '-node-count', query ? `${visible.length} / ${eligible.length}` : eligible.length);
+    const locked = !connected(status) || app.action || app.testingAll;
+    const rows = visible.map(node => ({ name: node.name, delay: Number(nodeDelay(node)), tested: app.testing.has(node.name),
+      error: app.testResults.get(node.name)?.error, selected: node.name === picked }));
+    const signature = JSON.stringify({ rows, locked, pinned, query });
+    if (signature === list.dataset.signature) continue;
+    list.dataset.signature = signature;
+    list.replaceChildren();
+    if (!rows.length) list.append(element('li', 'empty-inline choice-empty', query ? '没有匹配线路' : '暂无可选线路'));
+    for (const item of rows) {
+      const row = element('li', 'choice-row' + (item.selected ? ' is-selected' : ''));
+      const route = element('button', 'choice-node');
+      route.type = 'button';
+      route.disabled = locked || (item.selected && pinned);
+      route.setAttribute('aria-label', `${ai ? 'ChatGPT / Claude' : '普通代理'}使用 ${item.name}`);
+      route.append(element('span', 'node-label', item.name));
+      if (item.selected) route.append(element('span', 'tag blue', '当前'));
+      route.addEventListener('click', () => selectNode(scope, item.name));
+      const delay = item.tested ? '测速中…' : item.error ? '不可用' : item.delay > 0 ? `${Math.round(item.delay)} ms` : '测速';
+      const test = element('button', 'choice-test' + (item.error ? ' failed' : ''), delay);
+      test.type = 'button';
+      test.disabled = locked || item.tested;
+      test.title = '测试此线路的延迟';
+      test.setAttribute('aria-label', `测试 ${item.name} · ${delay}`);
+      test.addEventListener('click', () => testNodes([item.name]));
+      row.append(route, test);
+      list.append(row);
+    }
   }
 }
 async function refresh(manual = false, discover = false) {
   if (app.loading) return; app.loading = true; $('refresh-icon').classList.add('spinning');
   try { const result = manual || discover ? await api('/api/refresh', { discover }) : await api('/api/status'); renderStatus(result.status || result); if (manual) toast(discover ? '已重新寻找本机代理核心' : '连接状态已更新'); }
-  catch (error) { if (manual) toast(error.message, true); if (!app.status) { setText('controller-label', '控制台未连接'); $('controller-pill').className = 'status-pill offline'; show('offline-banner', true); setText('offline-message', error.message); setText('openai-node', '暂时无法读取'); setText('openai-detail', '请确认控制台后台仍在运行'); } }
+  catch (error) { if (manual) toast(error.message, true); if (!app.status) { setText('controller-label', '控制台未连接'); $('controller-pill').className = 'status-pill offline'; show('offline-banner', true); setText('offline-message', error.message); setText('openai-node', '暂时无法读取'); } }
   finally { app.loading = false; $('refresh-icon').classList.remove('spinning'); }
 }
 async function testNodes(names) {
@@ -205,18 +196,8 @@ $('refresh').addEventListener('click', () => refresh(true));
 $('test-all').addEventListener('click', () => testNodes());
 $('reconnect-chatgpt').addEventListener('click', reconnectChatGpt);
 $('auto-chatgpt').addEventListener('change', event => action('/api/automatic-chatgpt', { enabled: event.target.checked }));
-$('gpt-follow').addEventListener('click', () => selectNode('openai', app.status?.general?.group));
-function setScope(scope) {
-  app.scope = scope;
-  $('scope-gpt').setAttribute('aria-pressed', String(scope === 'openai'));
-  $('scope-general').setAttribute('aria-pressed', String(scope === 'general'));
-  if (app.status) renderGeneralPicker(app.status);
-  renderNodes();
-}
-$('scope-gpt').addEventListener('click', () => setScope('openai'));
-$('scope-general').addEventListener('click', () => setScope('general'));
-$('choose-gpt').addEventListener('click', () => setScope('openai'));
-$('node-search').addEventListener('input', renderNodes); $('node-sort').addEventListener('change', renderNodes);
+$('auto-ordinary').addEventListener('click', () => action('/api/auto-ordinary', {}));
+$('node-search').addEventListener('input', renderNodes);
 $('general-select').addEventListener('change', (event) => { const node = event.target.value; if (node) selectNode('general', node); });
 for (const id of ['open-settings', 'offline-settings', 'footer-settings']) $(id).addEventListener('click', openSettings);
 for (const id of ['close-settings', 'cancel-settings']) $(id).addEventListener('click', closeSettings);
